@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+import config
+import datetime
+import os
+import re
+import subprocess
+import sys
+
+class StatProcessor:
+  def __init__(self, interface):
+    self._interface = interface
+
+  def _get_global_stats(self):
+    output = self._run('pfctl', '-s', 'info')
+    return output.split('\n')
+
+  def _get_interface_stats(self, global_stats):
+    beginning, ending = -1, -1
+    for i, line in enumerate(global_stats):
+      if beginning == -1:
+        if line.startswith('Interface Stats for %s' % self._interface):
+          beginning = i
+      else:
+        if line.strip() == '':
+          ending = i
+          break
+
+    if beginning == -1 or ending == -1:
+      raise Exception('Interface %s not found.' % self._interface)
+
+    lines = [line.strip() for line in global_stats[beginning:ending]]
+    return lines
+    
+  def _parse_interface_stats(self, interface_stats):
+    parsed = {}
+    parsed['bytes_in'] = self._find_interface_stat('Bytes In', interface_stats)
+    parsed['bytes_out'] = self._find_interface_stat('Bytes Out', interface_stats)
+    return parsed
+
+  def stats(self):
+    global_stats = self._get_global_stats()
+    interface_stats = self._get_interface_stats(global_stats)
+    parsed = self._parse_interface_stats(interface_stats)
+    return parsed
+
+  def _find_interface_stat(self, name, interface_stats):
+    tokens = None
+    for line in interface_stats:
+      line = line.strip()
+      if line.startswith(name):
+        tokens = line[len(name):].strip().split()
+        break
+
+    if tokens is None:
+      return None
+    if len(tokens) != 2:
+      raise Exception('Unexpected number of tokens in interface stats.')
+    return {
+      'ipv4': int(tokens[0]),
+      'ipv6': int(tokens[1]),
+    }
+
+  def _run(self, cmd, *args):
+    cmd_and_args = [cmd]
+    cmd_and_args += args
+    return subprocess.Popen(cmd_and_args,
+      stderr=subprocess.PIPE, stdout=subprocess.PIPE).communicate()[0]
+
+  # Reset all stats to zero.
+  def clear_stats(self):
+    if not config.DEBUG:
+      self._run('pfctl', '-F', 'info')
+
+
+class RecordWriter:
+  def __init__(self, interface):
+    self._path = config.PATH
+    self._interface = interface
+
+  def write(self, stats):
+    time = self._get_current_time()
+    filename, record_name = self._get_filename(time), self._get_record_name(time)
+
+    if not os.path.exists(self._path):
+      os.mkdir(self._path, 0700)
+    if not self._is_record_unique():
+      raise Exception('Record %s is not unique.' % record_name)
+
+    record_file = open(filename, 'a')
+    record_file.write('%s %s %s %s %s %s\n' % (
+      record_name,
+      self._interface,
+      stats['bytes_in']['ipv4'],
+      stats['bytes_out']['ipv4'],
+      stats['bytes_in']['ipv6'],
+      stats['bytes_out']['ipv6'],
+    ))
+    record_file.close()
+
+  def _is_record_unique(self):
+    time = self._get_current_time()
+    filename, record_name = self._get_filename(time), self._get_record_name(time)
+    if not os.path.exists(filename):
+      return True
+
+    record_file = open(filename)
+    lines = record_file.readlines()
+    record_file.close()
+
+    for line in lines:
+      if line.strip().startswith(record_name):
+        return False
+    return True
+
+  def _get_filename(self, time):
+    return os.path.join(self._path, time.strftime('%Y%m'))
+
+  def _get_record_name(self, time):
+    return time.strftime('%Y%m%d')
+
+  # This may seem like a useless method, but it eases testing by allowing one
+  # to easily alter the time used by other methods.
+  def _get_current_time(self):
+    return datetime.datetime.now()
+
+
+if __name__ == '__main__':
+  interface = 'xl1'
+  stat_processor = StatProcessor(interface)
+  record_writer = RecordWriter(interface)
+  stats = stat_processor.stats()
+  record_writer.write(stats)
+  stat_processor.clear_stats()

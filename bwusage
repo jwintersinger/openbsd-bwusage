@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+
+# To automatically update bandwidth usage on a daily basis and then send the
+# latest stats off via e-mail, insert the following line into your crontab:
+#   update-bandwidth-stats && bwusage | mail -s "Bandwidth usage on $(hostname) for $(date +%Y.%m.%d)" user@example.org
+import config
+import os
+
+class RecordReader:
+  def __init__(self):
+    self._path = config.PATH
+
+  def monthly_stats(self):
+    monthly = {}
+    for record in self._list_record_files():
+      monthly[record] = self._aggregate_monthly_stats(record)
+    return monthly
+
+  def daily_stats(self):
+    daily = {}
+    most_recent = open(self._abs_path(self._list_record_files()[-1]))
+    for line in most_recent:
+      record = self._extract_record(line)
+      daily[record['date']] = record
+    most_recent.close()
+    return daily
+
+  def _list_record_files(self):
+    entries = []
+    for entry in os.listdir(self._path):
+      abs_entry = self._abs_path(entry)
+      if os.path.isfile(abs_entry) and len(entry) == 6 and entry.isdigit():
+        entries.append(entry)
+    return sorted(entries)
+
+  def _aggregate_monthly_stats(self, filename):
+    aggregated = { 'date': self._format_year_and_month(filename), }
+    stats = ('bytes_in', 'bytes_out', 'bytes_total')
+    protocols = ('ipv4', 'ipv6')
+    for stat in stats:
+      aggregated[stat] = {}
+      for protocol in protocols:
+        aggregated[stat][protocol] = 0
+
+    stats_file = open(self._abs_path(filename))
+    for line in stats_file:
+      month_record = self._extract_record(line)
+      for protocol in protocols:
+        for stat in stats:
+          aggregated[stat][protocol] += month_record[stat][protocol]
+    stats_file.close()
+    return aggregated
+
+  def _extract_record(self, stats_line):
+    tokens = stats_line.strip().split()
+    if len(tokens) != 6:
+      raise Exception('Unexpected number of tokens.')
+
+    stats = {
+      'date': self._format_year_and_month_and_day(tokens[0]),
+      'interface': tokens[1],
+      'bytes_in': {
+        'ipv4': int(tokens[2]),
+        'ipv6': int(tokens[4]),
+      },
+      'bytes_out': {
+        'ipv4': int(tokens[3]),
+        'ipv6': int(tokens[5]),
+      },
+    }
+    stats['bytes_total'] = {
+      'ipv4': stats['bytes_in']['ipv4'] + stats['bytes_out']['ipv4'],
+      'ipv6': stats['bytes_in']['ipv6'] + stats['bytes_out']['ipv6'],
+    }
+    return stats
+
+  def _format_year_and_month(self, date):
+    ding = '%s.%s' % (date[:4], date[4:])
+    return ding
+
+  def _format_year_and_month_and_day(self, date):
+    return '%s.%s.%s' % (date[:4], date[4:6], date[6:])
+
+  def _abs_path(self, relative_path):
+    return os.path.join(self._path, relative_path)
+
+class RecordPrinter:
+  def print_monthly(self, monthly_stats):
+    col_width = 12
+    date_width = 7
+    self._print_header(col_width, 'Month', date_width)
+    self._print_body(col_width, monthly_stats)
+
+  def print_daily(self, daily_stats):
+    col_width = 12
+    date_width = 10
+    self._print_header(col_width, 'Date', date_width)
+    self._print_body(col_width, daily_stats)
+
+  def _print_header(self, col_width, date_text, date_width):
+    border_char = '='
+    header = date_text.rjust(date_width)
+    border = date_width * border_char
+    for protocol in ('IPv4', 'IPv6'):
+      for column in ('In', 'Out', 'Tot'):
+        column_title = '%s (%s)' % (column, protocol)
+        header += column_title.rjust(col_width)
+        border += (len(column_title) * border_char).rjust(col_width)
+    print '%s\n%s\n%s' % (border, header, border)
+
+  def _print_body(self, col_width, stats):
+    protocols = ('ipv4', 'ipv6')
+    columns = ('bytes_in', 'bytes_out', 'bytes_total')
+    for entry in reversed(sorted(stats.keys())):
+      output = stats[entry]['date']
+      for protocol in protocols:
+        for column in columns:
+          # Technically, I should use "GiB", but that requires several extra
+          # characters per column, pushing each column over the 80-character
+          # ideal.
+          value = '%.2f GB' % (stats[entry][column][protocol] / 2.0**30)
+          output += value.rjust(col_width)
+      print output
+
+  def _header(self, s):
+    border = len(s)*'='
+    return '%s\n%s\n%s' % (border, s, border)
+
+if __name__ == '__main__':
+  reader = RecordReader()
+  RecordPrinter().print_daily(reader.daily_stats())
+  print
+  RecordPrinter().print_monthly(reader.monthly_stats())
