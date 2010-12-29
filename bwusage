@@ -2,8 +2,7 @@
 
 # To automatically update bandwidth usage on a daily basis and then send the
 # latest stats off via e-mail, insert the following line into your crontab:
-#   58 23 * * * update-bandwidth-stats && bwusage | mail -s \
-#               "Bandwidth usage on $(hostname) for $(date +%Y.%m.%d)" user@example.org
+# 58 23 * * * /root/.apps/openbsd-bwusage/update-bandwidth-stats && /root/.apps/openbsd-bwusage/bwusage | mail -s "Bandwidth usage on `hostname` for `date +%Y.%m.%d`" user@example.org
 
 import config
 import os
